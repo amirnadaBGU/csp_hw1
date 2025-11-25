@@ -11,8 +11,8 @@ class CSP:
         self.variables = self.generate_variables(n_var)
         self.init_domains = self.generate_domains(self.variables, domain_size) # Initial domains - to not be changed
         self.domains = copy.deepcopy(self.init_domains) # dynamic domains
-        self.constrains = self.generate_constraints(self.variables, self.domains, self.density, self.tightness)
-        self.constrains_checks = 0
+        self.constraints = self.generate_constraints(self.variables, self.domains, self.density, self.tightness)
+        self.constraint_checks = 0
 
     def generate_variables(self,n_var):
         """
@@ -99,7 +99,69 @@ class CSP:
                 return True  # Conflict detected!
         return False  # No conflict
 
+# Algorithms:
+def backtracking_search(csp):
+    """
+    Main entry point for Backtracking Search.
+    input:
+        csp: CSP instance
+    output:
+        dict {var: val} if solution found, else None.
+    """
+    return backtrack_recursive_call({}, csp)
+
+def backtrack_recursive_call(assignment, csp):
+    """
+    Recursive function for Backtracking - Classic Implementation.
+    input:
+        assignment: Dictionary containing current assignments {0: 1, 1: 0...}
+        csp: The CSP problem object
+    output:
+        dictionary containing current solution {0: 1, 1: 0...} or none
+    """
+
+    # 1. Base Case: Have we assigned values to all variables?
+    if len(assignment) == len(csp.variables):
+        return assignment
+
+    # 2. Select Unassigned Variable
+    # Pick the next variable in order.
+    # Since variables are indices (0, 1, 2...), the next variable is the current length of assignment.
+    var = csp.variables[len(assignment)]
+
+    # 3. Domain Iteration: Try every value in the variable's domain
+    for value in csp.domains[var]:
+
+        # 4. Consistency Check
+        is_consistent = True
+
+        # Iterate over variables that have already been assigned (the past)
+        for prev_var, prev_val in assignment.items():
+            # Check for conflict between the new variable (var) and the old one (prev_var)
+            # Note: The check_conflict method automatically increments csp.constraint_checks
+            if csp.check_conflict(var, value, prev_var, prev_val):
+                is_consistent = False
+                break  # One conflict is enough to invalidate this value
+
+        # 5. If the value is consistent, proceed
+        if is_consistent:
+            assignment[var] = value  # Assign the value
+
+            # Recursive call to the next step
+            result = backtrack_recursive_call(assignment, csp)
+
+            # If the recursion returned a result (not None), a solution was found!
+            if result is not None:
+                return result
+
+            # 6. Backtrack: If we reached here, the path failed.
+            # Remove the assignment and try the next value in the loop.
+            del assignment[var]
+
+    # 7. If we tried all values and none worked - return failure to the previous level
+    return None
 
 
 if __name__ == "__main__":
     mycsp = CSP(n_var=3,domain_size=3,density=0.34,tightness=0.33)
+    backtracking_search(mycsp)
