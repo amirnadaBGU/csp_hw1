@@ -1,6 +1,8 @@
 import copy
 import random
 from itertools import combinations
+from matplotlib import pyplot as plt
+
 class CSP:
     def __init__(self, n_var, domain_size,density,tightness):
         """
@@ -180,9 +182,61 @@ def backtrack_recursive_call(assignment, csp):
     # 7. If we tried all values and none worked - return failure to the previous level
     return None
 
+# Helper functions
+def generate_graph(algorithm,p1,n_var,domain_size,iterations = 10):
+    """
+    Function that generates graphs according to requirements
+    input:
+        algorithm: algorithm name (string) # backtrack, forward_check, forward_check_cbj
+        p1: number between 0 and 1 (float)
+        n_var: number of variables (int)
+        domain_size: number of variables (int)
+    output:
+        void - function generates graphs according to requirements
+    """
+    # Generate runs
+    constraint_checks = {}
+    for i in range(1, 10):
+        p2 = i / 10
+        constraint_checks[p2]=[]
+        for k in range(iterations):
+            csp = CSP(n_var=n_var,domain_size=domain_size,density=p1,tightness=p2)
+            if algorithm == 'backtrack':
+                _ = backtracking_search(csp)
+            else:
+                print(f"Algorithm: {algorithm} is still not implemented")
+                return
+            constraint_checks[p2].append(csp.constraint_checks)
+
+    # Generate data for graphs
+    constraint_checks_averages = {}
+    for key in constraint_checks:
+        constraint_checks_averages[key] = sum(constraint_checks[key])/len(constraint_checks[key])
+
+    # Generate matplotlib graph
+
+    x_values = constraint_checks_averages.keys()
+    y_values = [constraint_checks_averages[x] for x in x_values]
+
+    # Graph creation
+    plt.figure(figsize=(10, 6))  # canvas size
+    plt.plot(x_values, y_values, marker='o', linestyle='-', color='b', label=algorithm)
+
+    # Titles
+    plt.title(f'CSP Performance: {algorithm}\n(N={n_var}, D={domain_size}, Density={p1})')
+    plt.xlabel('Tightness (p2)')
+    plt.ylabel('Average Constraint Checks')
+
+    # Design
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    plt.show()
+
+
 
 if __name__ == "__main__":
-    mycsp = CSP(n_var=10,domain_size=10,density=0.5,tightness=0.5)
-    solution = backtracking_search(mycsp)
-    print(f"Solution: {solution} Correctness is {mycsp.check_assigment_validity(solution)}")
-    print(f"Number of constraints checks: {mycsp.constraint_checks}")
+    # mycsp = CSP(n_var=2,domain_size=2,density=0.5,tightness=0.5)
+    # solution = backtracking_search(mycsp)
+    # print(f"Solution: {solution} Correctness is {mycsp.check_assigment_validity(solution)}")
+    # print(f"Number of constraints checks: {mycsp.constraint_checks}")
+    generate_graph('backtrack',0.4,10,10)
