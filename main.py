@@ -99,6 +99,25 @@ class CSP:
                 return True  # Conflict detected!
         return False  # No conflict
 
+    def check_assigment_validity(self, assignment):
+        """
+        Checks if the entire assignment is valid by verifying that no two
+        assigned variables violate a constraint.
+        input:
+            assignment: dict {var: val}
+        output:
+            True if assignment is consistent, False otherwise.
+        """
+        # Check all combinations in the assigment
+        for var1, var2 in combinations(assignment.keys(), 2):
+            val1 = assignment[var1]
+            val2 = assignment[var2]
+
+            if self.check_conflict(var1, val1, var2, val2):
+                return False
+
+        return True
+
 # Algorithms:
 def backtracking_search(csp):
     """
@@ -163,5 +182,7 @@ def backtrack_recursive_call(assignment, csp):
 
 
 if __name__ == "__main__":
-    mycsp = CSP(n_var=3,domain_size=3,density=0.34,tightness=0.33)
-    backtracking_search(mycsp)
+    mycsp = CSP(n_var=10,domain_size=10,density=0.5,tightness=0.5)
+    solution = backtracking_search(mycsp)
+    print(f"Solution: {solution} Correctness is {mycsp.check_assigment_validity(solution)}")
+    print(f"Number of constraints checks: {mycsp.constraint_checks}")
