@@ -1,7 +1,11 @@
 import copy
 import random
 from itertools import combinations
+from typing import Optional
+
 from matplotlib import pyplot as plt
+from zope.interface.common import optional
+
 
 class CSP:
     def __init__(self, n_var, domain_size,density,tightness):
@@ -120,6 +124,10 @@ class CSP:
 
         return True
 
+    def reset_metrics(self):
+
+        self.constraint_checks = 0
+
 # Algorithms:
 def backtracking_search(csp):
     """
@@ -182,6 +190,212 @@ def backtrack_recursive_call(assignment, csp):
     # 7. If we tried all values and none worked - return failure to the previous level
     return None
 
+class FC_Base_Solver:
+    """
+    Forward Checking class
+    """
+    def __init__(self, csp):
+        self.csp = csp
+        self.assignment = {}
+        self.domains = copy.deepcopy(csp.init_domains)
+        self.backtracks = 0
+        self.conflict_set = {v: set() for v in csp.variables}
+
+    def _get_removed_values(self, assigned_var: int, assigned_val: int, var_j: int, domain_j: list[int]) -> list[int]:
+        removed_vals = []
+        if (assigned_var, var_j) in self.csp.constraints:
+            for val_j in domain_j:
+                if self.csp.check_conflict(assigned_var, assigned_val, var_j, val_j):
+                    removed_vals.append(val_j)
+        return removed_vals
+
+    def _check_domain_wipeout(self, var_j: int, domain_j: list[int], assigned_var: int) -> tuple[Optional[int], set[int]]:
+        if not domain_j:
+            return var_j, {assigned_var}
+        return None, set()
+
+    def select_unassigned_variable(self):
+        """
+        Returns next unassigned variable.
+        """
+        for var in self.csp.variables:
+            if var not in self.assignment:
+                return var
+        return None
+
+    def order_domain_values(self, var):
+        """
+        Returns the domain ov a variable
+        """
+        return self.domains[var]
+
+    def forward_check(self, assigned_var, assigned_val, current_domains, assignment):
+        """
+        Do FC
+        """
+        # Copy current domains
+        new_domains = {v: d.copy() for v, d in current_domains.items()}
+
+        # Going via all future variables to be assigned
+        for var_j in self.csp.variables:
+            if var_j not in assignment and var_j != assigned_var:
+
+                # 1. קבלת ערכים להסרה מהמשתנה var_j
+                removed_vals = self._get_removed_values(assigned_var, assigned_val, var_j, new_domains[var_j])
+
+                if removed_vals:
+                    # 2. הסרה
+                    for val in removed_vals:
+                        new_domains[var_j].remove(val)
+
+                    # 3. בדיקת ריקון
+                    failed_var, conflict_fc = self._check_domain_wipeout(var_j, new_domains[var_j], assigned_var)
+
+                    if failed_var is not None:
+                        return new_domains, failed_var, conflict_fc
+
+        return new_domains, None, set()
+
+    def solve(self):
+        return self._search()
+
+    def _search(self):
+        if len(self.assignment) == len(self.csp.variables):
+            return self.assignment
+
+        var_i = self.select_unassigned_variable()
+        if var_i is None: return self.assignment
+
+        old_domains = copy.deepcopy(self.domains)
+
+        for val_i in self.order_domain_values(var_i):
+            self.assignment[var_i] = val_i
+
+            new_domains, failed_var_j, _ = self.forward_check(var_i, val_i, self.domains, self.assignment)
+
+            if failed_var_j is None:
+                self.domains = new_domains
+                result = self._search()
+                if result is not None:
+                    return result
+
+            # Backtrack
+            del self.assignment[var_i]
+            self.backtracks += 1
+            self.domains = old_domains
+
+        return None
+
+class FC_CBJ_Solver(FC_Base_Solver):
+    def __init__(self, csp):
+        super().__init__(csp)
+        self.active_jump_target = None
+
+    def find_backjump_var(self, conflict_set):
+        if not conflict_set:
+            return -1
+        max_var = -1
+        for var in conflict_set:
+            if var in self.assignment and var > max_var:
+                max_var = var
+        return max_var
+
+    def _get_potential_conflicts(self, wiped_variable):
+        """
+        פונקציית עזר קריטית ל-CBJ:
+        כאשר משתנה wiped_variable מתרוקן, אנחנו צריכים לאסוף את כל המשתנים
+        שכבר הוקצו (assignment) ויש להם אילוץ ישיר איתו.
+        אלו הם המשתנים שככל הנראה צמצמו את הדומיין שלו לפני המשתנה הנוכחי.
+        """
+        conflicts = set()
+        for assigned_var in self.assignment:
+            # בדיקה האם קיים אילוץ בין המשתנה המוקצה למשתנה שהתרוקן
+            if (assigned_var, wiped_variable) in self.csp.constraints:
+                conflicts.add(assigned_var)
+        return conflicts
+
+    # דריסה של forward_check כדי להוסיף את הלוגיקה של איסוף קונפליקטים היסטוריים
+    def forward_check(self, assigned_var, assigned_val, current_domains, assignment):
+        new_domains = {v: d.copy() for v, d in current_domains.items()}
+
+        for var_j in self.csp.variables:
+            if var_j not in assignment and var_j != assigned_var:
+
+                # 1. קבלת ערכים להסרה (זהה לבסיס)
+                removed_vals = self._get_removed_values(assigned_var, assigned_val, var_j, new_domains[var_j])
+
+                if removed_vals:
+                    for val in removed_vals:
+                        new_domains[var_j].remove(val)
+
+                    # 2. בדיקת ריקון דומיין - עם תוספת לוגיקה!
+                    if not new_domains[var_j]:
+                        # המשתנה var_j התרוקן!
+
+                        # אוספים את כל מי שהשפיע עליו בעבר:
+                        conflict_set = self._get_potential_conflicts(var_j)
+                        # מוסיפים גם את המשתנה הנוכחי שנתן את המכה האחרונה
+                        conflict_set.add(assigned_var)
+
+                        return new_domains, var_j, conflict_set
+
+        return new_domains, None, set()
+
+    def _search(self):
+        if len(self.assignment) == len(self.csp.variables):
+            return self.assignment
+
+        var_i = self.select_unassigned_variable()
+        if var_i is None: return self.assignment
+
+        old_domains = copy.deepcopy(self.domains)
+        self.conflict_set[var_i] = set()
+        print(var_i)
+
+        for val_i in self.order_domain_values(var_i):
+            self.assignment[var_i] = val_i
+
+            new_domains, failed_var_j, conflict_fc = self.forward_check(var_i, val_i, self.domains, self.assignment)
+
+            if failed_var_j is None:
+                self.domains = new_domains
+                result = self._search()
+
+                if result is not None:
+                    return result
+
+                # בדיקה אם אנחנו באמצע קפיצה (Backjumping)
+                if self.active_jump_target is not None:
+                    if self.active_jump_target < var_i:
+                        # אנחנו "בדרך" למטה - מדלגים!
+                        del self.assignment[var_i]
+                        self.domains = old_domains
+                        return None
+                    else:
+                        # הגענו ליעד! מפסיקים את הקפיצה וממשיכים לערך הבא
+                        self.active_jump_target = None
+
+            else:
+                # כשל ב-FC
+                self.backtracks += 1
+                self.conflict_set[var_i].update(conflict_fc)
+
+            del self.assignment[var_i]
+            self.domains = old_domains
+
+        # נכשלו כל הערכים - חישוב לאן לקפוץ
+        var_k = self.find_backjump_var(self.conflict_set[var_i])
+
+        if var_k == -1:
+            return None
+
+        if var_k in self.conflict_set:
+            self.conflict_set[var_k].update(self.conflict_set[var_i])
+
+        self.active_jump_target = var_k
+        return None
+
+
 # Helper functions
 def generate_graph(algorithm,p1,n_var,domain_size,iterations = 10):
     """
@@ -232,11 +446,63 @@ def generate_graph(algorithm,p1,n_var,domain_size,iterations = 10):
 
     plt.show()
 
+def compare_algorithms(p1, n_var, domain_size, iterations=5):
+    tightness_values = [i / 10.0 for i in range(1, 10)]
 
+    avg_checks_fc = []
+    avg_checks_cbj = []
+
+    print(f"\n📈 Starting Graph Generation (N={n_var}, D={domain_size}, Density={p1}, Iterations={iterations})...")
+    print("   Please wait, this might take a moment...")
+
+    for p2 in tightness_values:
+        total_checks_fc = 0
+        total_checks_cbj = 0
+
+        for k in range(iterations):
+            csp = CSP(n_var=n_var, domain_size=domain_size, density=p1, tightness=p2)
+
+            # FC Run
+            csp.reset_metrics()
+            solver_fc = FC_Base_Solver(csp)
+            solver_fc.solve()
+            total_checks_fc += csp.constraint_checks
+
+            # CBJ Run
+            csp.reset_metrics()
+            solver_cbj = FC_CBJ_Solver(csp)
+            solver_cbj.solve()
+            total_checks_cbj += csp.constraint_checks
+
+        avg_fc = total_checks_fc / iterations
+        avg_cbj = total_checks_cbj / iterations
+        avg_checks_fc.append(avg_fc)
+        avg_checks_cbj.append(avg_cbj)
+        print(f"   > Tightness {p2}: FC={avg_fc:.1f}, CBJ={avg_cbj:.1f}")
+
+    # Plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(tightness_values, avg_checks_fc, marker='o', linestyle='-', color='blue', label='Forward Checking (FC)')
+    plt.plot(tightness_values, avg_checks_cbj, marker='s', linestyle='--', color='red', label='FC + CBJ')
+
+    plt.title(f'Performance Comparison: FC vs FC+CBJ\n(N={n_var}, D={domain_size}, Density={p1})')
+    plt.xlabel('Tightness (p2)')
+    plt.ylabel('Average Constraint Checks')
+    plt.legend()
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    print("📊 Graph generated successfully.")
+    plt.show() #
 
 if __name__ == "__main__":
     # mycsp = CSP(n_var=2,domain_size=2,density=0.5,tightness=0.5)
     # solution = backtracking_search(mycsp)
     # print(f"Solution: {solution} Correctness is {mycsp.check_assigment_validity(solution)}")
     # print(f"Number of constraints checks: {mycsp.constraint_checks}")
-    generate_graph('backtrack',0.4,10,10)
+    # generate_graph('backtrack',0.4,10,10)
+    # print("--- Sanity Check ---")
+    # small_csp = CSP(n_var=10, domain_size=10, density=0.7, tightness=0.5)
+    # solver = FC_CBJ_Solver(small_csp)
+    # sol = solver.solve()
+
+    compare_algorithms(0.7, 10, 10, iterations=10)
