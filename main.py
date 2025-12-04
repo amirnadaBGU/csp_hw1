@@ -191,9 +191,6 @@ def backtrack_recursive_call(assignment, csp):
     return None
 
 class FC_Base_Solver:
-    """
-    Forward Checking class
-    """
     def __init__(self, csp):
         self.csp = csp
         self.assignment = {}
@@ -385,6 +382,7 @@ class FC_CBJ_Solver(FC_Base_Solver):
             del self.assignment[var_i]
             self.domains = old_domains
 
+
         # Dead End
         var_k = self.find_backjump_var(self.conflict_set[var_i])
 
@@ -392,7 +390,7 @@ class FC_CBJ_Solver(FC_Base_Solver):
             return None
 
         # מורישים את הקונפליקטים למשתנה היעד
-        if var_k in self.conflict_set:
+        if var_k in self.conflict_set: # שורת הגנה
             # לפני שמעבירים, מוודאים שוב ש-var_i לא נמצא שם (ליתר ביטחון)
             self.conflict_set[var_i].discard(var_i)
             self.conflict_set[var_k].update(self.conflict_set[var_i])
@@ -509,5 +507,4 @@ if __name__ == "__main__":
     # small_csp = CSP(n_var=10, domain_size=10, density=0.7, tightness=0.5)
     # solver = FC_CBJ_Solver(small_csp)
     # sol = solver.solve()
-
-    compare_algorithms(0.7, 10, 10, iterations=100)
+    compare_algorithms(0.3, 10, 10, iterations=100)
