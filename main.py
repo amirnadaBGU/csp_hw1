@@ -287,33 +287,28 @@ class FC_Base_Solver:
         return None
 
 class FC_CBJ_Solver(FC_Base_Solver):
-    def __init__(self, csp):
+    def __init__(self, csp, verbose=False):
         super().__init__(csp)
+        self.verbose = verbose
         self.active_jump_target = None
-        self.conflicting_ancestors = {v: set() for v in csp.variables}
+        self.conflicting_ancestors: dict[int, set[int]] = {v: set() for v in csp.variables}
+
+    def log(self, msg):
+        if getattr(self, 'verbose', False):
+            indent = "  " * len(self.assignment)
+            print(f"{indent}{msg}")
 
     def find_backjump_var(self, conflict_set):
-        if not conflict_set:
-            return -1
+        if not conflict_set: return -1
         max_var = -1
         for var in conflict_set:
+            # מוודאים ש:
+            # 1. המשתנה הוא חלק מההשמה הנוכחית
+            # 2. הוא הגדול ביותר שמצאנו
+            # 3. הוא לא המשתנה שאנחנו נמצאים בו כרגע (למרות שטיפלנו בזה בהסרה)
             if var in self.assignment and var > max_var:
                 max_var = var
         return max_var
-
-    def _get_potential_conflicts(self, wiped_variable):
-        """
-        פונקציית עזר קריטית ל-CBJ:
-        כאשר משתנה wiped_variable מתרוקן, אנחנו צריכים לאסוף את כל המשתנים
-        שכבר הוקצו (assignment) ויש להם אילוץ ישיר איתו.
-        אלו הם המשתנים שככל הנראה צמצמו את הדומיין שלו לפני המשתנה הנוכחי.
-        """
-        conflicts = set()
-        for assigned_var in self.assignment:
-            # בדיקה האם קיים אילוץ בין המשתנה המוקצה למשתנה שהתרוקן
-            if (assigned_var, wiped_variable) in self.csp.constraints:
-                conflicts.add(assigned_var)
-        return conflicts
 
     def forward_check(self, assigned_var, assigned_val, current_domains, assignment):
         new_domains = {v: d.copy() for v, d in current_domains.items()}
@@ -321,171 +316,89 @@ class FC_CBJ_Solver(FC_Base_Solver):
         for var_j in self.csp.variables:
             if var_j not in assignment and var_j != assigned_var:
 
-                # שלב 1: חישוב הערכים שיש להסיר
+                # שמירת היסטוריה
+                if (assigned_var, var_j) in self.csp.constraints:
+                    self.conflicting_ancestors[var_j].add(assigned_var)
+
                 removed_vals = self._get_removed_values(assigned_var, assigned_val, var_j, new_domains[var_j])
 
                 if removed_vals:
-                    # ---עדכון היסטוריה רק אם באמת הסרנו ערכים ---
-                    # כעת assigned_var נחשב "אשם" בצמצום הדומיין של var_j
-                    if (assigned_var,
-                        var_j) in self.csp.constraints:  # (התנאי הזה תמיד יתקיים אם removed_vals לא ריק, אבל ליתר ביטחון)
-                        self.conflicting_ancestors[var_j].add(assigned_var)
-                    # ----------------------------------------------------------
-
                     for val in removed_vals:
                         new_domains[var_j].remove(val)
 
+                    # DWO Detected
                     if not new_domains[var_j]:
-                        # במקרה של כשל: הקונפליקט הוא כל מי שצמצם את var_j בעבר + הנוכחי
-                        conflict_set = self.conflicting_ancestors[var_j].copy()
-                        conflict_set.add(assigned_var)
-                        return new_domains, var_j, conflict_set
+                        # מחזירים את האבות של המשתנה שהתרוקן + המשתנה הנוכחי
+                        culprits = self.conflicting_ancestors[var_j].copy()
+                        culprits.add(assigned_var)
+                        return new_domains, var_j, culprits
 
         return new_domains, None, set()
 
+    def _cleanup_ancestors(self, variable_to_remove):
+        for v in self.csp.variables:
+            self.conflicting_ancestors[v].discard(variable_to_remove)
+
     def _search(self):
         if len(self.assignment) == len(self.csp.variables):
+            self.log(f"✅ Solution Found: {self.assignment}")
             return self.assignment
 
         var_i = self.select_unassigned_variable()
         if var_i is None: return self.assignment
 
         old_domains = copy.deepcopy(self.domains)
+
+        # 1. אתחול עם ה-Ancestors (מהעבר)
         self.conflict_set[var_i] = self.conflicting_ancestors[var_i].copy()
 
         for val_i in self.order_domain_values(var_i):
             self.assignment[var_i] = val_i
 
-            new_domains, failed_var_j, conflict_fc = self.forward_check(var_i, val_i, self.domains, self.assignment)
+            new_domains, wiped_var, culprits = self.forward_check(var_i, val_i, self.domains, self.assignment)
 
-            if failed_var_j is None:
+            if wiped_var is None:
+                # FC עבר בהצלחה
                 self.domains = new_domains
                 result = self._search()
 
                 if result is not None:
                     return result
 
-                # בדיקה אם אנחנו באמצע קפיצה (Backjumping)
+                # חזרה מקפיצה
                 if self.active_jump_target is not None:
                     if self.active_jump_target < var_i:
-                        # אנחנו "בדרך" למטה - מדלגים!
                         self._cleanup_ancestors(var_i)
                         del self.assignment[var_i]
                         self.domains = old_domains
                         return None
                     else:
-                        # הגענו ליעד! מפסיקים את הקפיצה וממשיכים לערך הבא
                         self.active_jump_target = None
-
             else:
-                # כשל ב-FC
+                # FC נכשל (DWO)
                 self.backtracks += 1
-                self.conflict_set[var_i].update(conflict_fc)
+                culprits.discard(var_i)
+                self.conflict_set[var_i].update(culprits)
 
+            # Backtrack
             self._cleanup_ancestors(var_i)
             del self.assignment[var_i]
             self.domains = old_domains
 
-        # נכשלו כל הערכים - חישוב לאן לקפוץ
+        # Dead End
         var_k = self.find_backjump_var(self.conflict_set[var_i])
 
         if var_k == -1:
             return None
 
+        # מורישים את הקונפליקטים למשתנה היעד
         if var_k in self.conflict_set:
+            # לפני שמעבירים, מוודאים שוב ש-var_i לא נמצא שם (ליתר ביטחון)
+            self.conflict_set[var_i].discard(var_i)
             self.conflict_set[var_k].update(self.conflict_set[var_i])
 
         self.active_jump_target = var_k
         return None
-
-    def _cleanup_ancestors(self, variable_to_remove):
-        """פונקציית ניקוי שמסירה משתנה מההיסטוריה כשהוא מתבטל"""
-        for v in self.csp.variables:
-            if variable_to_remove in self.conflicting_ancestors[v]:
-                self.conflicting_ancestors[v].remove(variable_to_remove)
-
-    # obsolete versions - Old version with lazy FC - not according to original idea of implementation.
-    def _search_old(self):
-        if len(self.assignment) == len(self.csp.variables):
-            return self.assignment
-
-        var_i = self.select_unassigned_variable()
-        if var_i is None: return self.assignment
-
-        old_domains = copy.deepcopy(self.domains)
-        self.conflict_set[var_i] = set()
-        print(var_i)
-
-        for val_i in self.order_domain_values(var_i):
-            self.assignment[var_i] = val_i
-
-            new_domains, failed_var_j, conflict_fc = self.forward_check(var_i, val_i, self.domains, self.assignment)
-
-            if failed_var_j is None:
-                self.domains = new_domains
-                result = self._search()
-
-                if result is not None:
-                    return result
-
-                # בדיקה אם אנחנו באמצע קפיצה (Backjumping)
-                if self.active_jump_target is not None:
-                    if self.active_jump_target < var_i:
-                        # אנחנו "בדרך" למטה - מדלגים!
-                        del self.assignment[var_i]
-                        self.domains = old_domains
-                        return None
-                    else:
-                        # הגענו ליעד! מפסיקים את הקפיצה וממשיכים לערך הבא
-                        self.active_jump_target = None
-
-            else:
-                # כשל ב-FC
-                self.backtracks += 1
-                self.conflict_set[var_i].update(conflict_fc)
-
-            del self.assignment[var_i]
-            self.domains = old_domains
-
-        # נכשלו כל הערכים - חישוב לאן לקפוץ
-        var_k = self.find_backjump_var(self.conflict_set[var_i])
-
-        if var_k == -1:
-            return None
-
-        if var_k in self.conflict_set:
-            self.conflict_set[var_k].update(self.conflict_set[var_i])
-
-        self.active_jump_target = var_k
-        return None
-
-    def forward_check_old(self, assigned_var, assigned_val, current_domains, assignment):
-        new_domains = {v: d.copy() for v, d in current_domains.items()}
-
-        for var_j in self.csp.variables:
-            if var_j not in assignment and var_j != assigned_var:
-
-                # 1. קבלת ערכים להסרה (זהה לבסיס)
-                removed_vals = self._get_removed_values(assigned_var, assigned_val, var_j, new_domains[var_j])
-
-                if removed_vals:
-                    for val in removed_vals:
-                        new_domains[var_j].remove(val)
-
-                    # 2. בדיקת ריקון דומיין - עם תוספת לוגיקה!
-                    if not new_domains[var_j]:
-                        # המשתנה var_j התרוקן!
-
-                        # אוספים את כל מי שהשפיע עליו בעבר:
-                        conflict_set = self._get_potential_conflicts(var_j)
-                        # מוסיפים גם את המשתנה הנוכחי שנתן את המכה האחרונה
-                        conflict_set.add(assigned_var)
-
-                        return new_domains, var_j, conflict_set
-
-        return new_domains, None, set()
-
-
 
 
 # Helper functions
@@ -597,4 +510,4 @@ if __name__ == "__main__":
     # solver = FC_CBJ_Solver(small_csp)
     # sol = solver.solve()
 
-    compare_algorithms(0.4, 10, 10, iterations=100)
+    compare_algorithms(0.7, 10, 10, iterations=100)
